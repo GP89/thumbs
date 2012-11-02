@@ -12,6 +12,7 @@ from txaws.credentials import AWSCredentials
 from twisted.web import server, resource
 from twisted.web.client import Agent
 from twisted.internet import reactor
+from twisted.internet.threads import deferToThread
 from twisted.python.logfile import DailyLogFile
 from twisted.python import log
 from twisted.python.failure import Failure
@@ -66,18 +67,7 @@ class StringIOWrapper(object):
     def __len__(self):
         return getFileObjectLen(self.stringio_obj)
 
-class WorkerThread(Thread):
-    def __init__(self,queue):
-        Thread.__init__(self)
-        self.conn= S3Connection(settings.ACCESS_KEY,settings.SECRET_KEY)
-        self.thumb_bucket= Bucket(self.conn,settings.THUMB_BUCKET)
-        self.store_bucket= Bucket(self.conn,settings.STORE_BUCKET)
-        self.buckets= {settings.THUMB_BUCKET: self.thumb_bucket,
-                       settings.STORE_BUCKET: self.store_bucket}
-        self.queue= queue
-        self.daemon= True
-        self.start()
-
+class ImageStuff(object):
     def calculateSize(self,width,height,image_size,maintain):
         """
         If either width or height are 0, it is set to match the original images'
@@ -158,7 +148,9 @@ class WorkerThread(Thread):
 #    @time_it
     def doThumbGenerate(self,image_data,thumb_data,image_key,width,height,maintain,sample_type):
 #        image_data= self.downloadImage(image_key,settings.STORE_BUCKET)
-        key= self.store_bucket.get_key(image_key)
+        conn= S3Connection(settings.ACCESS_KEY,settings.SECRET_KEY)
+        bucket= Bucket(conn,settings.STORE_BUCKET)
+        key= bucket.get_key(image_key)
 #        with closing(StringIO(key.get_contents_as_string())) as image_data:
         key.get_contents_to_file(image_data)
         image_data.seek(0)
@@ -185,40 +177,52 @@ class WorkerThread(Thread):
             del thumb_image
         return thumb_data,thumb_format,False
 
-#    @time_it
-    def runTask(self,func,args,kwargs):
-        if func==settings.TASK_GENERATE_THUMB:
-            return self.doThumbGenerate(*args,**kwargs)
-        else:
-            raise KeyError("Received unexpected task: %s"%repr(func))
+#class WorkerThread(Thread,ImageStuff):
+#    def __init__(self,queue):
+#        Thread.__init__(self)
+#        self.conn= S3Connection(settings.ACCESS_KEY,settings.SECRET_KEY)
+#        self.thumb_bucket= Bucket(self.conn,settings.THUMB_BUCKET)
+#        self.store_bucket= Bucket(self.conn,settings.STORE_BUCKET)
+#        self.buckets= {settings.THUMB_BUCKET: self.thumb_bucket,
+#                       settings.STORE_BUCKET: self.store_bucket}
+#        self.queue= queue
+#        self.daemon= True
+#        self.start()
+#
+##    @time_it
+#    def runTask(self,func,args,kwargs):
+#        if func==settings.TASK_GENERATE_THUMB:
+#            return self.doThumbGenerate(*args,**kwargs)
+#        else:
+#            raise KeyError("Received unexpected task: %s"%repr(func))
+#
+#    def run(self):
+#        while True:
+#            priority,work,callback,errback= self.queue.get()
+#            try:
+#                func,args,kwargs= work
+#                try:
+#                    response= self.runTask(func,args,kwargs)
+#                except Exception as err:
+#                    reactor.callLater(0,errback,Failure())
+#                else:
+#                    if not isinstance(response,tuple):
+#                        response= (response,)
+#                    reactor.callLater(0,callback,*response)
+#            except Exception as err:
+#                log.err(Failure())
+#            finally:
+#                self.queue.task_done()
 
-    def run(self):
-        while True:
-            priority,work,callback,errback= self.queue.get()
-            try:
-                func,args,kwargs= work
-                try:
-                    response= self.runTask(func,args,kwargs)
-                except Exception as err:
-                    reactor.callLater(0,errback,Failure())
-                else:
-                    if not isinstance(response,tuple):
-                        response= (response,)
-                    reactor.callLater(0,callback,*response)
-            except Exception as err:
-                log.err(Failure())
-            finally:
-                self.queue.task_done()
-
-class Thumb(resource.Resource):
+class Thumb(resource.Resource,ImageStuff):
     isLeaf = True
     def __init__(self):
         resource.Resource.__init__(self)
         self.queue= Queue()
         self.boto_conn= S3Connection(settings.ACCESS_KEY,settings.SECRET_KEY)
         self.tx_conn= S3Client(AWSCredentials(settings.ACCESS_KEY,settings.SECRET_KEY))
-        for _ in xrange(settings.THREAD_COUNT):
-            WorkerThread(self.queue)
+#        for _ in xrange(settings.THREAD_COUNT):
+#            WorkerThread(self.queue)
 
 #    @time_it
     def verifyRequest(self,verify,checksum,sighash,uid,width,height):
@@ -279,9 +283,14 @@ class Thumb(resource.Resource):
 #                d.addErrback(error)
 #        def generate_thumb(image_data):
                 sample_type= Image.ANTIALIAS if anti_alias else Image.NEAREST
-                self.putWork(settings.TASK_GENERATE_THUMB,return_thumb,error,time_received,
-                             targs=(image_data,thumb_data,image_key,width,height,maintain,sample_type))
-        def return_thumb(thumb_data,thumb_format,broken):
+#                self.putWork(settings.TASK_GENERATE_THUMB,return_thumb,error,time_received,
+#                             targs=(image_data,thumb_data,image_key,width,height,maintain,sample_type))
+                d= deferToThread(self.doThumbGenerate,image_data,thumb_data,
+                                 image_key,width,height,maintain,sample_type)
+                d.addCallback(return_thumb)
+                d.addErrback(error)
+        def return_thumb(response):
+            thumb_data,thumb_format,broken= response
             metadata= {}
             if broken:
                 metadata["broken"]= True
