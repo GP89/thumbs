@@ -169,10 +169,10 @@ class WorkerThread(Thread):
         try:
             image_format= image.format
             width,height,maintain= self.calculateSize(width,height,image.size,maintain)
-#            exif_data= self.getExifData(image)
+            exif_data= self.getExifData(image)
             try:
-#                image= self.rotateImage(image,exif_data,width,height,sample_type)
-                thumb_image= image #self.generateThumb(image,width,height,maintain,sample_type)
+                image= self.rotateImage(image,exif_data,width,height,sample_type)
+                thumb_image= self.generateThumb(image,width,height,maintain,sample_type)
             except IOError:
                 return self.getBlankImage(thumb_data)
         finally:
