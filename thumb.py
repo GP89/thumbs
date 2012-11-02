@@ -17,7 +17,6 @@ from twisted.python import log
 from twisted.python.failure import Failure
 from boto.s3.connection import S3Connection
 from boto.s3.bucket import Bucket
-from PythonApp.hasher import Hasher
 import settings
 
 log.startLogging(DailyLogFile.fromFullPath("logs/thumb.log"))
